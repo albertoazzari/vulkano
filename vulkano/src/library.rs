@@ -49,7 +49,7 @@ pub struct VulkanLibrary {
 impl VulkanLibrary {
     /// Loads the default Vulkan library for this system.
     pub fn new() -> Result<Arc<Self>, LoadingError> {
-        #[cfg(target_os = "ios")]
+        #[cfg(any(target_os = "ios", target_os = "tvos"))]
         #[allow(non_snake_case)]
         fn def_loader_impl() -> Result<Box<dyn Loader>, LoadingError> {
             let loader = crate::statically_linked_vulkan_loader!();
@@ -57,28 +57,37 @@ impl VulkanLibrary {
             Ok(Box::new(loader))
         }
 
-        #[cfg(not(target_os = "ios"))]
+        #[cfg(not(any(target_os = "ios", target_os = "tvos")))]
         fn def_loader_impl() -> Result<Box<dyn Loader>, LoadingError> {
             #[cfg(windows)]
-            fn get_path() -> &'static Path {
-                Path::new("vulkan-1.dll")
-            }
+            const PATHS: [&str; 1] = ["vulkan-1.dll"];
             #[cfg(all(unix, not(target_os = "android"), not(target_os = "macos")))]
-            fn get_path() -> &'static Path {
-                Path::new("libvulkan.so.1")
-            }
+            const PATHS: [&str; 1] = ["libvulkan.so.1"];
             #[cfg(target_os = "macos")]
-            fn get_path() -> &'static Path {
-                Path::new("libvulkan.1.dylib")
-            }
+            const PATHS: [&str; 6] = [
+                "libvulkan.dylib",
+                "libvulkan.1.dylib",
+                "libMoltenVK.dylib",
+                "vulkan.framework/vulkan",
+                "MoltenVK.framework/MoltenVK",
+                // Stock macOS no longer has `/usr/local/lib` in `LD_LIBRARY_PATH` like it used to,
+                // but libraries (including MoltenVK installed through the Vulkan SDK) are still
+                // installed here. Try the absolute path as a last resort.
+                "/usr/local/lib/libvulkan.dylib",
+            ];
             #[cfg(target_os = "android")]
-            fn get_path() -> &'static Path {
-                Path::new("libvulkan.so")
+            const PATHS: [&str; 2] = ["libvulkan.so.1", "libvulkan.so"];
+
+            let mut err: Option<LoadingError> = None;
+
+            for path in PATHS {
+                match unsafe { DynamicLibraryLoader::new(path) } {
+                    Ok(library) => return Ok(Box::new(library)),
+                    Err(e) => err = Some(e),
+                }
             }
 
-            let loader = unsafe { DynamicLibraryLoader::new(get_path())? };
-
-            Ok(Box::new(loader))
+            Err(err.unwrap())
         }
 
         def_loader_impl().and_then(VulkanLibrary::with_loader)
